@@ -29,6 +29,20 @@ for card in cards:
     if card.get("layout") in ["token", "double_faced_token", "emblem", "art_series"] or card.get("set_type") == "token" or "Token" in card.get("type_line", ""):
         continue
         
+    # 公式大会で使用できないカード（印刷）を包括的に除外
+    # - 銀枠（ジョークセット）、金枠
+    if card.get("border_color") in ["silver", "gold"]:
+        continue
+    # - 記念品（30A、コレクターズエディションなど）
+    if card.get("set_type") == "memorabilia":
+        continue
+    # - どんぐりスタンプ（Unfinityの非公式カード）
+    if card.get("security_stamp") == "acorn":
+        continue
+    # - 大判カード、厚紙、プレイテストカードなど
+    if card.get("oversized") or "playtest" in card.get("promo_types", []) or "thick" in card.get("promo_types", []):
+        continue
+
     oracle_id = card.get("oracle_id")
     name = card.get("name")
     set_code = card.get("set")
