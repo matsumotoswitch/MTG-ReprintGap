@@ -7,7 +7,7 @@ MIN_GAP_DAYS = 10000
 TOP_N_ITEMS = 30
 # --------------------
 
-# 1. Scryfallのバルクデータを読み込み
+# Scryfallのバルクデータを読み込み
 print("データを読み込み中...")
 with open(DATA_FILE, "r", encoding="utf-8") as f:
     cards = json.load(f)
@@ -20,27 +20,25 @@ for card in cards:
     if card.get("digital"):
         continue
 
-    # 基本土地を除外（Forest, Island, Mountain, Swamp, Plains, Wastes）
-    # ※これを入れないと基本土地のデータがノイズになります
-    if "Basic Land" in card.get("type_line", ""):
+    # type_lineがNoneになる極稀なケースへの安全対策
+    type_line = card.get("type_line") or ""
+    
+    # トーナメントで使用できないカードタイプを包括的に除外
+    if any(t in type_line for t in ["Basic Land", "Token", "Conspiracy", "Attraction"]):
         continue
         
-    # トークン、両面トークン、紋章、カード裏面、アートカード、およびトークンセットなどを完全に除外
-    if card.get("layout") in ["token", "double_faced_token", "emblem", "art_series"] or card.get("set_type") == "token" or "Token" in card.get("type_line", ""):
+    # トーナメントのデッキに組み込めない特殊レイアウトやセットタイプを除外
+    invalid_layouts = {"token", "double_faced_token", "emblem", "art_series", "planar", "scheme", "vanguard", "hero"}
+    if card.get("layout") in invalid_layouts or card.get("set_type") in {"token", "minigame", "memorabilia"}:
         continue
         
-    # 公式大会で使用できないカード（印刷）を包括的に除外
-    # - 銀枠（ジョークセット）、金枠
-    if card.get("border_color") in ["silver", "gold"]:
+    # 銀枠、金枠、どんぐりスタンプなど非公式カードの除外
+    if card.get("border_color") in {"silver", "gold"} or card.get("security_stamp") == "acorn":
         continue
-    # - 記念品（30A、コレクターズエディションなど）
-    if card.get("set_type") == "memorabilia":
-        continue
-    # - どんぐりスタンプ（Unfinityの非公式カード）
-    if card.get("security_stamp") == "acorn":
-        continue
-    # - 大判カード、厚紙、プレイテストカードなど
-    if card.get("oversized") or "playtest" in card.get("promo_types", []) or "thick" in card.get("promo_types", []):
+
+    # 大判カード、提示用統率者カード（thick）、プレイテストカードなどを除外
+    promo_types = set(card.get("promo_types", []))
+    if card.get("oversized") or {"playtest", "thick"} & promo_types:
         continue
 
     oracle_id = card.get("oracle_id")
@@ -63,41 +61,38 @@ df['released_at'] = pd.to_datetime(df['released_at'])
 # 同一カードが同じ日（または同じセット）に複数収録されている場合の重複を排除し、純粋な「日付ごとのリリース」にする
 df = df.drop_duplicates(subset=['oracle_id', 'released_at'])
 
-# 2. 空白期間の計算
-max_gaps = []
-
+# 空白期間の計算（Pandasのベクトル演算による高速化）
 print("空白期間を計算中...")
-for oracle_id, group in df.groupby("oracle_id"):
-    if len(group) < 2:
-        continue # 再録が一度もないカードはスキップ
-    
-    # 発売日順にソートし、安全に行を取得できるようインデックスをリセット
-    group = group.sort_values("released_at").reset_index(drop=True)
-    card_name = group["name"].iloc[0]
-    
-    # 隣り合う印刷（セット）の発売日差（日数）を計算
-    group["prev_released_at"] = group["released_at"].shift(1)
-    group["prev_set"] = group["set"].shift(1)
-    group["gap_days"] = (group["released_at"] - group["prev_released_at"]).dt.days
-    
-    # そのカードにおける最大の空白期間を持つ行（インデックス）を取得
-    max_gap_idx = group["gap_days"].idxmax()
-    max_gap_row = group.loc[max_gap_idx]
-    
-    max_gaps.append({
-        "name": card_name,
-        "prev_set": max_gap_row["prev_set"].upper(),
-        "next_set": max_gap_row["set"].upper(),
-        "prev_date": max_gap_row["prev_released_at"].strftime('%Y-%m-%d'),
-        "next_date": max_gap_row["released_at"].strftime('%Y-%m-%d'),
-        "gap_days": int(max_gap_row["gap_days"])
-    })
 
-# 結果をソート
-result_df = pd.DataFrame(max_gaps)
-result_df = result_df.sort_values(by="gap_days", ascending=False)
+# 発売日順にソート（shiftを正しく機能させるため必須）
+df = df.sort_values(by=['oracle_id', 'released_at'])
 
-# 3. 指定された日数以上のカード、または上位N件を表示
+# 各カードごとに前回（1つ前）のリリース日とセットを取得
+df['prev_released_at'] = df.groupby('oracle_id')['released_at'].shift(1)
+df['prev_set'] = df.groupby('oracle_id')['set'].shift(1)
+
+# 日数差を計算（初版や再録がないカードはNaNになる）
+df['gap_days'] = (df['released_at'] - df['prev_released_at']).dt.days
+
+# gap_daysがNaNの行（再録ではない行）を除外
+df = df.dropna(subset=['gap_days'])
+df['gap_days'] = df['gap_days'].astype(int)
+
+# 各カードにおける最大の空白期間を持つ行（インデックス）を取得
+max_gap_idx = df.groupby('oracle_id')['gap_days'].idxmax()
+result_df = df.loc[max_gap_idx].copy()
+
+# 出力用に列を整形
+result_df['prev_set'] = result_df['prev_set'].str.upper()
+result_df['next_set'] = result_df['set'].str.upper()
+result_df['prev_date'] = result_df['prev_released_at'].dt.strftime('%Y-%m-%d')
+result_df['next_date'] = result_df['released_at'].dt.strftime('%Y-%m-%d')
+
+# 必要な列だけ抽出し、日数降順でソート（同じ日数の場合は名前順）
+result_df = result_df[['name', 'prev_set', 'next_set', 'prev_date', 'next_date', 'gap_days']]
+result_df = result_df.sort_values(by=["gap_days", "name"], ascending=[False, True])
+
+# 指定された日数以上のカード、または上位N件を表示
 print("\n=== 再録までの空白期間が長かったカード ===")
 over_threshold = result_df[result_df["gap_days"] >= MIN_GAP_DAYS]
 
