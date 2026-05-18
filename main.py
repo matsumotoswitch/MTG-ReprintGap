@@ -23,8 +23,12 @@ for card in cards:
     # type_lineがNoneになる極稀なケースへの安全対策
     type_line = card.get("type_line") or ""
     
+    # 基本土地は頻繁に再録されノイズになるため除外
+    if "Basic Land" in type_line:
+        continue
+
     # トーナメントで使用できないカードタイプを包括的に除外
-    if any(t in type_line for t in ["Basic Land", "Token", "Conspiracy", "Attraction"]):
+    if any(t in type_line for t in ["Token", "Conspiracy", "Attraction"]):
         continue
         
     # トーナメントのデッキに組み込めない特殊レイアウトやセットタイプを除外
